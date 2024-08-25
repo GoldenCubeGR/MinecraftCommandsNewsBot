@@ -1,66 +1,109 @@
-from flask import Flask, request, jsonify
+import discord
+from discord.ext import commands
+from flask import Flask, jsonify
 from flask_cors import CORS
-import art
+import threading
 import json
 import os
-import threading
 
+DISCORD_TOKEN = os.getenv('token')
+
+# Set up the Flask web server
 app = Flask(__name__)
 CORS(app)  # Enable CORS for all routes
 
-# List of available styles (fonts) from the art library
-available_styles = art.FONT_NAMES
-scores_file = 'scores.json'
-lock = threading.Lock()  # To ensure thread safety for file operations
+# File paths
+LATMESSAGE_FILE = 'latmessage.json'
+MESSAGES_FILE = 'messages.json'
 
-# Initialize scores.json if it doesn't exist
-if not os.path.exists(scores_file):
-    with open(scores_file, 'w') as f:
-        json.dump({style: 0 for style in available_styles}, f)
 
-@app.route('/')
-def home():
-    return "Welcome to the ASCII Art Generator!"
+def load_json(filename):
+    """Load JSON data from a file."""
+    if os.path.exists(filename):
+        with open(filename, 'r') as file:
+            return json.load(file)
+    return {}
 
-@app.route('/styles', methods=['GET'])
-def get_styles():
-    return jsonify({'available_styles': available_styles})
 
-@app.route('/ascii-art', methods=['POST'])
-def generate_ascii_art():
-    data = request.get_json()
-    print(data)
-    if not data or 'text' not in data or 'style' not in data:
-        return jsonify({'error': 'Invalid request. Please provide text and style as JSON data'}), 400
+def save_json(filename, data):
+    """Save JSON data to a file."""
+    with open(filename, 'w') as file:
+        json.dump(data, file, indent=4)
 
-    text = data['text']
-    style = data['style']
 
-    if style not in available_styles:
-        return jsonify({'error': 'Invalid style. Please choose from /styles'}), 400
+# Initialize latest message
+latest_message = load_json(LATMESSAGE_FILE)
 
-    try:
-        ascii_art = art.text2art(text, font=style)
-        update_score(style)
-        return jsonify({'ascii_art': ascii_art})
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
 
-def update_score(style):
-    with lock:
-        with open(scores_file, 'r+') as f:
-            scores = json.load(f)
-            scores[style] += 1
-            f.seek(0)
-            json.dump(scores, f)
-            f.truncate()
+@app.route('/latestnew', methods=['GET'])
+def get_latest_message():
+    return jsonify(latest_message)
 
-@app.route('/scores', methods=['GET'])
-def get_scores():
-    with lock:
-        with open(scores_file, 'r') as f:
-            scores = json.load(f)
-    return jsonify(scores)
 
-if __name__ == '__main__':
-    app.run(debug=True)
+def run_flask():
+    app.run(host='0.0.0.0', port=3000)
+
+
+# Set up the Discord bot
+intents = discord.Intents.default()
+intents.messages = True
+intents.guilds = True
+intents.message_content = True  # Enable the message content intent
+
+bot = commands.Bot(command_prefix='!', intents=intents)
+
+# Replace with your target channel ID
+TARGET_CHANNEL_ID = 1129108219533480028
+
+
+@bot.event
+async def on_ready():
+    print(f'Logged in as {bot.user.name}')
+
+
+@bot.event
+async def on_message(message):
+    global latest_message
+
+    # Check if the message is from the bot itself
+    if message.author == bot.user:
+        return
+
+    # Check if the message is from the specified channel
+    if message.channel.id == TARGET_CHANNEL_ID:
+        # Update the latest message
+        latest_message = {
+            'content': message.content,
+            'author': str(message.author),
+            'timestamp': str(message.created_at)
+        }
+        save_json(LATMESSAGE_FILE, latest_message)
+
+        # Append to all messages history
+        all_messages = load_json(MESSAGES_FILE)
+        if not isinstance(all_messages, list):
+            all_messages = [
+            ]  # Initialize as an empty list if not already a list
+
+        all_messages.append({
+            'content': message.content,
+            'author': str(message.author),
+            'timestamp': str(message.created_at)
+        })
+        save_json(MESSAGES_FILE, all_messages)
+
+    # Ensure other commands and events can still be processed
+    await bot.process_commands(message)
+
+
+bot_token = DISCORD_TOKEN
+
+
+def start_discord_bot():
+    bot.run(bot_token)
+
+
+# Start both the Flask web server and Discord bot
+if __name__ == "__main__":
+    threading.Thread(target=run_flask).start()
+    start_discord_bot()
